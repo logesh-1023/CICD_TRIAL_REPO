@@ -1,0 +1,4 @@
+{
+  "entrypoint": "model.py",
+  "args": ["--mode", "train", "--epochs", "5"]
+}
