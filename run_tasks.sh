@@ -1,35 +1,55 @@
 #!/bin/bash
 
-REPO_DIR="$(cd "$(dirname "$0")"; pwd)"
+# --- Config ---
+REPO_DIR="/home/ec2-user/CICD_TRIAL"
 TASK_DIR="$REPO_DIR/tasks"
 LOG_DIR="$REPO_DIR/logs"
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+TODAY=$(date +%Y%m%d)
+LOG_FILE="$LOG_DIR/model_$TODAY.log"
+SLACK_WEBHOOK="https://hooks.slack.com/services/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" 
 
+# --- Setup ---
+mkdir -p "$LOG_DIR"
 cd "$REPO_DIR"
-git pull origin main
 
-cd "$TASK_DIR"
+# --- Git Fetch & Detect Changes ---
+echo "🔄 Checking for changes in GitHub..." >> "$LOG_FILE"
+git fetch origin main >> "$LOG_FILE" 2>&1
+CHANGED_FILES=$(git diff --name-only HEAD origin/main)
 
-# Check for manifest.json
-if [ ! -f manifest.json ]; then
-  echo "[$TIMESTAMP] manifest.json not found" > "$LOG_DIR/error_$TIMESTAMP.log"
-  exit 1
+if [ -z "$CHANGED_FILES" ]; then
+    echo "✅ No changes detected at $(date)." >> "$LOG_FILE"
+    exit 0
 fi
 
-# Parse manifest
-ENTRY=$(jq -r '.entrypoint' manifest.json)
-ARGS=$(jq -r '.args // empty | join(" ")' manifest.json)
+# --- Pull Latest ---
+echo -e "\n⬇️ Pulling latest changes..." >> "$LOG_FILE"
+git pull origin main >> "$LOG_FILE" 2>&1
 
-if [ ! -f "$ENTRY" ]; then
-  echo "[$TIMESTAMP] Entrypoint '$ENTRY' not found!" > "$LOG_DIR/error_$TIMESTAMP.log"
-  exit 1
+# --- Determine main file to run ---
+MAIN_FILE="model.py"
+if [[ -f "$TASK_DIR/manifest.json" ]]; then
+    DYNAMIC_MAIN=$(jq -r '.main' "$TASK_DIR/manifest.json")
+    if [[ -n "$DYNAMIC_MAIN" && -f "$TASK_DIR/$DYNAMIC_MAIN" ]]; then
+        MAIN_FILE="$DYNAMIC_MAIN"
+    fi
+fi
+MAIN_FILE_PATH="$TASK_DIR/$MAIN_FILE"
+
+# --- Run Main File ---
+echo -e "\n▶️ Change detected at $(date). Running $MAIN_FILE...\n" >> "$LOG_FILE"
+python3 "$MAIN_FILE_PATH" >> "$LOG_FILE" 2>&1
+
+# --- Check for Errors ---
+STATUS="✅ Success"
+if grep -i "error\|exception" "$LOG_FILE"; then
+    STATUS="⚠️ Error Detected"
 fi
 
-# Run the script
-LOG_FILE="$LOG_DIR/${ENTRY%.py}_$TIMESTAMP.log"
-python3 "$ENTRY" $ARGS > "$LOG_FILE" 2>&1
+# --- Prepare Message for Slack ---
+CHANGED_LIST=$(echo "$CHANGED_FILES" | sed 's/^/- /' | paste -sd '\\n')
+LAST_OUTPUT=$(tail -n 20 "$LOG_FILE" | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
 
-# Send result to Slack (update your webhook below)
-SLACK_WEBHOOK="https://hooks.slack.com/services/your/slack/webhook"
-curl -X POST -H 'Content-type: application/json'   --data "{"text":"Execution of $ENTRY complete. Log output:
-$(tail -n 10 "$LOG_FILE")"}"   "$SLACK_WEBHOOK"
+curl -X POST -H 'Content-type: application/json' \
+  --data "{\"text\":\"[$STATUS] Task *$MAIN_FILE* executed on EC2.\n📦 *Files Changed:*\n$CHANGED_LIST\n\n📄 *Output:*\n\`\`\`$LAST_OUTPUT\`\`\`\"}" \
+  $SLACK_WEBHOOK
