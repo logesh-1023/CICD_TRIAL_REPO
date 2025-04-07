@@ -1,2 +1,2 @@
 def helper_func():
-    print("Hey me too!")
+    print("Hey me too! budddy")
